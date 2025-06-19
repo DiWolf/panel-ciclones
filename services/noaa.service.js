@@ -1,9 +1,11 @@
 import axios from 'axios';
 import { XMLParser } from 'fast-xml-parser';
-import * as cheerio from 'cheerio';
 
 const LAZARO_COORDS = { lat: 17.9567646, lon: -102.1943485 };
 
+/**
+ * Función principal para obtener ciclones activos con coordenadas y distancia.
+ */
 export async function getCiclones() {
   const url = 'https://www.nhc.noaa.gov/gtwo.xml?basin=epac&fdays=5';
   const parser = new XMLParser({ ignoreAttributes: false });
@@ -18,7 +20,7 @@ export async function getCiclones() {
     );
 
     if (!pacificoItem) {
-      console.warn('⚠️ No se encontró el item del Pacífico Este en el XML');
+      console.warn('⚠️ No se encontró el item del Pacífico Este');
       return [];
     }
 
@@ -28,35 +30,25 @@ export async function getCiclones() {
       : '';
 
     const matchesRaw = descText.match(/(Hurricane|Tropical Storm|Tropical Depression) [A-Z][a-z]+/g) || [];
-    const matches = [...new Set(
-      matchesRaw.filter(name => {
-        const cycloneName = name.split(' ').pop()?.toLowerCase();
-        return cycloneName && !['center', 'region', 'area'].includes(cycloneName);
-      })
-    )];
 
-    const ciclones = await Promise.all(matches.map(async name => {
-      const advisoryURL = extraerCodigoAdvisoryPorNombre(name, descText);
-      console.log(`🌐 ${name} -> ${advisoryURL}`);
+    const nombres = [...new Set(
+  matchesRaw
+    .map(m => m.split(' ').pop()?.trim().toLowerCase())
+    .filter(n => n && !['center', 'region', 'area', 'zone', 'coast'].includes(n))
+)];
 
-      let lat = null, lon = null, distancia = null, tituloReal = name;
 
-      if (advisoryURL) {
-        const result = await obtenerCoordenadasYNombreDesdeAdvisory(advisoryURL, name);
-        lat = result.lat;
-        lon = result.lon;
-        distancia = result.distancia;
-        tituloReal = result.titulo;
-      }
+    const ciclones = await Promise.all(nombres.map(async name => {
+      const result = await getCoordenadasDesdeIndexEP(name);
 
       return {
-        title: tituloReal,
+        title: capitalizeWords(name),
         link: pacificoItem.link,
         pubDate: pacificoItem.pubDate,
         description: descText,
-        lat,
-        lon,
-        distanciaKM: distancia
+        lat: result.lat,
+        lon: result.lon,
+        distanciaKM: result.distancia
       };
     }));
 
@@ -68,67 +60,42 @@ export async function getCiclones() {
   }
 }
 
-function extraerCodigoAdvisoryPorNombre(nombre, descripcion) {
-  const soloNombre = nombre.split(' ').pop()?.toLowerCase();
-  const lines = descripcion.split('\n');
+/**
+ * Busca coordenadas de un ciclón activo desde index-ep.xml
+ */
+async function getCoordenadasDesdeIndexEP(nombre) {
+  const url = 'https://www.nhc.noaa.gov/index-ep.xml';
+  const parser = new XMLParser({ ignoreAttributes: false });
 
-  const line = lines.find(line =>
-    soloNombre &&
-    line.toLowerCase().includes(soloNombre) &&
-    line.includes('MIATCPEP')
-  );
-
-  if (line) {
-    const match = line.match(/MIATCPEP(\d)/i);
-    if (match) {
-      const num = match[1];
-      return `https://www.nhc.noaa.gov/text/MIATCPEP${num}.shtml`;
-    }
-  }
-
-  const fallbackMap = {
-    barbara: '2',
-    cosme: '3'
-  };
-
-  if (soloNombre && fallbackMap[soloNombre]) {
-    return `https://www.nhc.noaa.gov/text/MIATCPEP${fallbackMap[soloNombre]}.shtml`;
-  }
-
-  return null;
-}
-
-async function obtenerCoordenadasYNombreDesdeAdvisory(url, nombreBase) {
   try {
-    console.log(`📥 Obteniendo advisory desde: ${url}`);
-    const { data: html } = await axios.get(url);
-    const $ = cheerio.load(html);
-    const text = $('body').text();
+    const { data } = await axios.get(url);
+    const parsed = parser.parse(data);
+    const items = parsed?.rss?.channel?.item || [];
 
-    const match = text.match(/LOCATION\.*\.*\.*([0-9.]+)([NS])\s+([0-9.]+)([EW])/i);
-    const lat = match ? parseFloat(match[1]) * (match[2].toUpperCase() === 'S' ? -1 : 1) : null;
-    const lon = match ? parseFloat(match[3]) * (match[4].toUpperCase() === 'W' ? -1 : 1) : null;
+    const item = items.find(it => {
+      const stormName = it?.['nhc:Cyclone']?.['nhc:name']?.toLowerCase();
+      return stormName === nombre.toLowerCase();
+    });
 
-    const distancia = (lat && lon)
-      ? calcularDistanciaKM(lat, lon, LAZARO_COORDS.lat, LAZARO_COORDS.lon)
-      : null;
-
-    const statusMatch = text.match(/(HURRICANE|TROPICAL STORM|TROPICAL DEPRESSION)[\s\.]+([A-Z]+)/i);
-    const tipo = statusMatch ? capitalizeWords(statusMatch[1].toLowerCase()) : null;
-    const nombre = statusMatch ? capitalizeWords(statusMatch[2].toLowerCase()) : null;
-
-    let titulo = nombreBase;
-    if (tipo && nombre && nombreBase.toLowerCase().includes(nombre.toLowerCase())) {
-      titulo = `${tipo} ${nombre}`;
+    const centro = item?.['nhc:Cyclone']?.['nhc:center'];
+    if (centro) {
+      const [latStr, lonStr] = centro.split(',').map(s => s.trim());
+      const lat = parseFloat(latStr);
+      const lon = parseFloat(lonStr);
+      const distancia = calcularDistanciaKM(lat, lon, LAZARO_COORDS.lat, LAZARO_COORDS.lon);
+      return { lat, lon, distancia };
     }
 
-    return { lat, lon, distancia, titulo };
+    return { lat: null, lon: null, distancia: null };
   } catch (err) {
-    console.error('❌ Error al procesar advisory:', err.message);
-    return { lat: null, lon: null, distancia: null, titulo: nombreBase };
+    console.error('❌ Error al obtener coordenadas desde index-ep.xml:', err.message);
+    return { lat: null, lon: null, distancia: null };
   }
 }
 
+/**
+ * Calcula la distancia en kilómetros entre dos coordenadas.
+ */
 function calcularDistanciaKM(lat1, lon1, lat2, lon2) {
   const R = 6371;
   const toRad = deg => deg * Math.PI / 180;
@@ -141,6 +108,9 @@ function calcularDistanciaKM(lat1, lon1, lat2, lon2) {
   return Math.round(R * c);
 }
 
+/**
+ * Capitaliza la primera letra de cada palabra.
+ */
 function capitalizeWords(text) {
   return text.replace(/\b\w/g, c => c.toUpperCase());
 }
