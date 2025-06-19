@@ -1,69 +1,10 @@
 import axios from 'axios';
 import { XMLParser } from 'fast-xml-parser';
+import * as cheerio from 'cheerio';
 
 const LAZARO_COORDS = { lat: 17.9567646, lon: -102.1943485 };
 
-/**
- * Función principal para obtener ciclones activos con coordenadas y distancia.
- */
 export async function getCiclones() {
-  const url = 'https://www.nhc.noaa.gov/gtwo.xml?basin=epac&fdays=5';
-  const parser = new XMLParser({ ignoreAttributes: false });
-
-  try {
-    const { data } = await axios.get(url);
-    const parsed = parser.parse(data);
-    const items = parsed?.rss?.channel?.item || [];
-
-    const pacificoItem = items.find(item =>
-      item.title.toLowerCase().includes('eastern north pacific')
-    );
-
-    if (!pacificoItem) {
-      console.warn('⚠️ No se encontró el item del Pacífico Este');
-      return [];
-    }
-
-    const rawDesc = pacificoItem.description;
-    const descText = typeof rawDesc === 'string'
-      ? rawDesc.replace(/<[^>]*>/g, '').replace(/\n/g, ' ').trim()
-      : '';
-
-    const matchesRaw = descText.match(/(Hurricane|Tropical Storm|Tropical Depression) [A-Z][a-z]+/g) || [];
-
-    const nombres = [...new Set(
-  matchesRaw
-    .map(m => m.split(' ').pop()?.trim().toLowerCase())
-    .filter(n => n && !['center', 'region', 'area', 'zone', 'coast'].includes(n))
-)];
-
-
-    const ciclones = await Promise.all(nombres.map(async name => {
-      const result = await getCoordenadasDesdeIndexEP(name);
-
-      return {
-        title: capitalizeWords(name),
-        link: pacificoItem.link,
-        pubDate: pacificoItem.pubDate,
-        description: descText,
-        lat: result.lat,
-        lon: result.lon,
-        distanciaKM: result.distancia
-      };
-    }));
-
-    console.log(`✅ ${ciclones.length} ciclones detectados:`, ciclones.map(c => c.title));
-    return ciclones;
-  } catch (error) {
-    console.error('❌ Error leyendo el XML de NOAA:', error.message);
-    return [];
-  }
-}
-
-/**
- * Busca coordenadas de un ciclón activo desde index-ep.xml
- */
-async function getCoordenadasDesdeIndexEP(nombre) {
   const url = 'https://www.nhc.noaa.gov/index-ep.xml';
   const parser = new XMLParser({ ignoreAttributes: false });
 
@@ -72,30 +13,92 @@ async function getCoordenadasDesdeIndexEP(nombre) {
     const parsed = parser.parse(data);
     const items = parsed?.rss?.channel?.item || [];
 
-    const item = items.find(it => {
-      const stormName = it?.['nhc:Cyclone']?.['nhc:name']?.toLowerCase();
-      return stormName === nombre.toLowerCase();
-    });
+    const ciclonesPorNombre = new Map();
 
-    const centro = item?.['nhc:Cyclone']?.['nhc:center'];
-    if (centro) {
-      const [latStr, lonStr] = centro.split(',').map(s => s.trim());
-      const lat = parseFloat(latStr);
-      const lon = parseFloat(lonStr);
-      const distancia = calcularDistanciaKM(lat, lon, LAZARO_COORDS.lat, LAZARO_COORDS.lon);
-      return { lat, lon, distancia };
+    for (const item of items) {
+      const titulo = item.title;
+
+      if (!/(Hurricane|Tropical Storm|Tropical Depression)/i.test(titulo)) continue;
+
+      const rawDesc = item.description || '';
+      const descText = typeof rawDesc === 'string'
+        ? rawDesc.replace(/<[^>]*>/g, '').replace(/\n/g, ' ').trim()
+        : '';
+
+      const nombreBase = extraerNombreFenomeno(titulo);
+      if (!nombreBase) continue;
+
+      let entry = ciclonesPorNombre.get(nombreBase);
+
+      if (!entry) {
+        let lat = null, lon = null, distancia = null;
+        const advisoryURL = item.link;
+
+        if (advisoryURL) {
+          const result = await obtenerCoordenadasYNombreDesdeAdvisory(advisoryURL, titulo);
+          lat = result.lat;
+          lon = result.lon;
+          distancia = result.distancia;
+        }
+
+        entry = {
+          title: nombreBase,
+          link: item.link,
+          pubDate: item.pubDate,
+          description: descText,
+          lat,
+          lon,
+          distanciaKM: distancia,
+          otros: []
+        };
+
+        ciclonesPorNombre.set(nombreBase, entry);
+      } else {
+        entry.otros.push({
+          title: titulo,
+          link: item.link
+        });
+      }
     }
 
-    return { lat: null, lon: null, distancia: null };
-  } catch (err) {
-    console.error('❌ Error al obtener coordenadas desde index-ep.xml:', err.message);
-    return { lat: null, lon: null, distancia: null };
+    const ciclones = Array.from(ciclonesPorNombre.values());
+    console.log(`✅ ${ciclones.length} ciclones detectados:`, ciclones.map(c => c.title));
+    return ciclones;
+  } catch (error) {
+    console.error('❌ Error leyendo el XML de NOAA:', error.message);
+    return [];
   }
 }
 
-/**
- * Calcula la distancia en kilómetros entre dos coordenadas.
- */
+function extraerNombreFenomeno(titulo) {
+  const match = titulo.match(/Hurricane ([A-Z][a-z]+)/) ||
+                titulo.match(/Tropical Storm ([A-Z][a-z]+)/) ||
+                titulo.match(/Tropical Depression ([A-Z][a-z]+)/);
+  return match ? match[0] : null;
+}
+
+async function obtenerCoordenadasYNombreDesdeAdvisory(url, nombreBase) {
+  try {
+    console.log(`📥 Obteniendo advisory desde: ${url}`);
+    const { data: html } = await axios.get(url);
+    const $ = cheerio.load(html);
+    const text = $('body').text();
+
+    const match = text.match(/LOCATION\.*\.*\.*([0-9.]+)([NS])\s+([0-9.]+)([EW])/i);
+    const lat = match ? parseFloat(match[1]) * (match[2].toUpperCase() === 'S' ? -1 : 1) : null;
+    const lon = match ? parseFloat(match[3]) * (match[4].toUpperCase() === 'W' ? -1 : 1) : null;
+
+    const distancia = (lat && lon)
+      ? calcularDistanciaKM(lat, lon, LAZARO_COORDS.lat, LAZARO_COORDS.lon)
+      : null;
+
+    return { lat, lon, distancia, titulo: nombreBase };
+  } catch (err) {
+    console.error('❌ Error al procesar advisory:', err.message);
+    return { lat: null, lon: null, distancia: null, titulo: nombreBase };
+  }
+}
+
 function calcularDistanciaKM(lat1, lon1, lat2, lon2) {
   const R = 6371;
   const toRad = deg => deg * Math.PI / 180;
@@ -108,9 +111,6 @@ function calcularDistanciaKM(lat1, lon1, lat2, lon2) {
   return Math.round(R * c);
 }
 
-/**
- * Capitaliza la primera letra de cada palabra.
- */
 function capitalizeWords(text) {
   return text.replace(/\b\w/g, c => c.toUpperCase());
 }

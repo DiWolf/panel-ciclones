@@ -50,7 +50,7 @@
     <div class="row g-3 mb-4">
       <div class="col-lg-6">
         <div class="card h-100">
-          <div class="card-header">🗺️ Mapa Interactivo</div>
+          <div class="card-header">🗘️ Mapa Interactivo</div>
           <div class="card-body p-0">
             <div id="map"></div>
           </div>
@@ -67,6 +67,7 @@
     </div>
 
     <% if (ciclones.length > 0) { %>
+
     <div class="row mb-4">
       <div class="col-md-4">
         <div class="card text-bg-primary">
@@ -95,9 +96,6 @@
         </div>
       </div>
     </div>
-    <% } else { %>
-    <p>No hay ciclones activos actualmente.</p>
-    <% } %> <% if (ciclones.length > 0) { %>
     <input
       class="form-control mb-3"
       placeholder="🔍 Buscar fenómeno..."
@@ -145,7 +143,48 @@
         </tbody>
       </table>
     </div>
-    <% if (refugios && refugios.length > 0) { %>
+    <% let tieneOtros = ciclones.some(c => c.otros && c.otros.length > 0); %> <%
+    if (tieneOtros) { %>
+    <div class="card mb-4">
+      <div class="card-header">📌 Información adicional de ciclones</div>
+      <div class="card-body">
+        <div class="table-responsive">
+          <table class="table table-bordered table-hover">
+            <thead class="table-light">
+              <tr>
+                <th>Ciclón</th>
+                <th>Título</th>
+                <th>Enlace</th>
+              </tr>
+            </thead>
+            <tbody>
+              <% ciclones.forEach(c => { if (c.otros && c.otros.length > 0) {
+              c.otros.forEach(o => { %>
+              <tr>
+                <td><strong><%= c.title %></strong></td>
+                <td><%= o.title %></td>
+                <td>
+                  <button
+                    type="button"
+                    class="btn btn-outline-primary btn-sm"
+                    data-bs-toggle="modal"
+                    data-bs-target="#detalleModal"
+                    data-url="<%= o.link %>"
+                  >
+                    Ver más
+                  </button>
+                </td>
+              </tr>
+              <% }) } }) %>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+    <% } %> <% } else { %>
+    <p>No hay ciclones activos actualmente.</p>
+    <% } %> <% if (ciclones.length > 0) { %> <% if (refugios && refugios.length
+    > 0) { %>
     <div class="card mt-5">
       <div class="card-header bg-success text-white">
         🏚️ Refugios Temporales Habilitados
@@ -190,7 +229,6 @@
       </div>
     </div>
 
-    
     <% } %>
 
     <div
@@ -217,8 +255,8 @@
         </p>
         <p><strong>Fuente de viento en tiempo real:</strong> Windy API</p>
         <p>
-          <strong>Desarrollado por:</strong> AuroraTI.MX | Powered by
-          Node.js + EJS
+          <strong>Desarrollado por:</strong> AuroraTI.MX | Powered by Node.js +
+          EJS
         </p>
       </div>
     </div>
@@ -294,7 +332,7 @@
     <script src="https://api.windy.com/assets/map-forecast/libBoot.js"></script>
     <script>
       const options = {
-        key: "UykdEzqX6nPn8bs1JDzu2UMx6mwD0O01",
+        key: "<%= windyKey %>",
         lat: 15,
         lon: -105,
         zoom: 4,

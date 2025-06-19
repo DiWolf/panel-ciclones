@@ -46,8 +46,13 @@ let refugios = [];
 
 // Ruta principal (no requiere CORS)
 app.get('/', async (req, res) => {
-  res.render('index', { ciclones, refugios });
+  res.render('index', { 
+    ciclones, 
+    refugios,
+    windyKey: process.env.WINDY_API_KEY  // 👈 Aquí se pasa la key al frontend
+  });
 });
+
 
 // API pública para ciclones (protegida con CORS)
 app.get('/api/ciclones', (req, res) => {
